@@ -1,13 +1,12 @@
 # Wii-Fi Tester
 
-This is a deliberately small Wii homebrew utility for bringing up a manually
+Wii-Fi Tester is a small Wii homebrew utility for validating a manually
 installed original-Wii WLAN module on a Wii Mini. It talks directly to the
 Hollywood SDIO1 controller at `0x0d080000` with Homebrew Channel AHB access, so
-it does not need the WLAN driver that Nintendo removed from Wii Mini IOS.
+it does not need the WLAN driver that Nintendo removed from Wii Mini IOS. It
+also runs on an original Wii as a known-good hardware baseline.
 
-The end target is a passive network scan that lists nearby SSIDs/BSSIDs without
-installing IOS or using IOS's WLAN driver. The current milestone proves the
-native PowerPC hardware transport:
+Its complete scope is native PowerPC hardware-transport validation:
 
 - Checks that AHB access was preserved by the loader.
 - Confirms the SDIO1 host-controller register block is sane.
@@ -18,8 +17,8 @@ native PowerPC hardware transport:
   bring-up matrix, stopping as soon as CMD5 answers.
 - Runs SDIO CMD5/CMD3/CMD7 enumeration after a successful bring-up.
 - Reads the standard CCCR and common/function CIS with read-only CMD52 calls.
-- Temporarily enables function 1 and performs one bounded CMD53 byte read to
-  validate DAT0, then restores the original function-enable state.
+- Temporarily enables function 1 and performs one bounded four-byte CMD53 PIO
+  read to validate DAT0, then restores the original function-enable state.
 - Opens the native SSB address window and enumerates raw ChipCommon/core IDs.
 - Reports raw status and a stage-specific diagnosis.
 - Restores the host-controller control registers after the probe.
@@ -28,9 +27,10 @@ native PowerPC hardware transport:
   misleading failure after an expected earlier stop.
 
 It does **not** write NAND, install/reload/patch IOS, alter network settings,
-load proprietary WLAN firmware, or leave an SDIO function enabled. The direct
-probe performs only the small CMD53 reads required for DAT0 and SSB identity
-validation. No IOS WLAN device is opened or called.
+load WLAN firmware, activate RF, receive or transmit packets, scan SSIDs, or
+leave an SDIO function enabled. The direct probe performs only the small CMD53
+reads required for DAT0 and SSB identity validation. No IOS WLAN device is
+opened or called.
 
 ## Build
 
@@ -74,22 +74,19 @@ discard that request, so the program refuses direct SDIO access unless
 | CMD3/CMD7 fails | CMD/CLK quality or power stability under enumeration |
 | CCCR/CIS succeeds but CMD53 fails | DAT0 or its series resistor/joints |
 | CMD53 succeeds but SSB identity is invalid | Function-1 window mapping or unstable module |
-| SSB core enumeration succeeds | Native SDIO transport is ready for firmware/PHY work |
+| SSB core enumeration succeeds | Native SDIO hardware transport passed |
 
 The host `card-detect` bit is shown only as raw evidence. The internal WLAN
 module is non-removable and does not have a useful card-detect switch, so a
 clear bit alone is not a fault.
 
-## Next milestones
+## Scope boundary
 
-1. Establish a one-run SDIO/CIS/CMD53/SSB baseline on a normal Wii, then run
-   the same package once on the Wii Mini.
-2. Read board calibration/SPROM data and identify the 802.11 core/PHY revisions.
-3. Add validated runtime firmware loading from USB without writing NAND.
-4. Bring up receive-only radio and parse beacon frames into a scan table.
-
-The concrete scan design and milestones are in
-[`docs/SCAN_ARCHITECTURE.md`](docs/SCAN_ARCHITECTURE.md).
+Success means the SDIO function, DAT0 data path, and native SSB cores enumerate
+reliably. Wii-Fi Tester is a hardware and soldering diagnostic, not a Wi-Fi
+driver or networking application. Firmware loading, PHY/MAC initialization,
+radio operation, network scanning, and association are intentionally outside
+the project.
 
 For console validation, use the one-run
 [`docs/TEST_CHECKLIST.md`](docs/TEST_CHECKLIST.md). Release changes are tracked
