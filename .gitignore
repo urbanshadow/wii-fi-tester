@@ -1,0 +1,23 @@
+# devkitPPC build products
+/*.o
+/*.d
+/*.elf
+/*.dol
+/*.map
+/dist/
+
+# Local hardware/firmware research must never enter the repository
+/analysis/
+/firmware/
+/tools/
+*.wad
+*.app
+ticket.bin
+tmd.bin
+
+# Local agent/editor state
+/.agents/
+/.codex/
+/.idea/
+/.vscode/
+.DS_Store
