@@ -66,6 +66,25 @@ typedef struct
     u16 rca;
 } bringup_attempt;
 
+typedef enum
+{
+    INITIALIZATION_STAGE_NOT_STARTED,
+    INITIALIZATION_STAGE_BRINGUP,
+    INITIALIZATION_STAGE_CCCR,
+    INITIALIZATION_STAGE_FUNCTION_ENABLE,
+    INITIALIZATION_STAGE_FUNCTION_READY,
+    INITIALIZATION_STAGE_BUS_WIDTH,
+    INITIALIZATION_STAGE_COMPLETE
+} initialization_stage;
+
+typedef struct
+{
+    bringup_attempt bringup;
+    initialization_stage stage;
+    command_result cmd52_last;
+    bool complete;
+} initialization_attempt;
+
 typedef struct
 {
     s32 ios_version;
@@ -104,9 +123,9 @@ typedef struct
     bool cccr_ok;
     bool cis_readable;
     bool manfid_found;
-    u8 bringup_count;
-    s8 winning_attempt;
-    bringup_attempt bringup[WLAN_PROBE_MAX_BRINGUP_ATTEMPTS];
+    u8 initialization_count;
+    s8 winning_initialization;
+    initialization_attempt init[WLAN_PROBE_MAX_INITIALIZATION_ATTEMPTS];
     data_path_result data_path;
     ssb_probe_result ssb;
 } probe_result;

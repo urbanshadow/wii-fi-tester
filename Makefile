@@ -2,7 +2,7 @@
 
 TARGET := wii-fi-tester
 APP_DIR := dist/apps/wii-fi-tester
-SOURCES := main host io sdio cis ssb probe diagnosis presentation report
+SOURCES := main host io sdio cis ssb init probe diagnosis presentation report
 OBJECTS := $(addsuffix .o,$(SOURCES))
 DEPS := $(OBJECTS:.o=.d)
 C_SOURCE_FILES := $(addprefix source/,$(addsuffix .c,$(SOURCES)))

@@ -17,9 +17,22 @@ static void write_command(FILE *file, const char *name,
             "%s index=%u argument=%08lX status=%08lX response=%08lX "
             "complete=%u\n",
             name, (unsigned int)command->index,
-            (unsigned long)command->argument,
-            (unsigned long)command->status,
+            (unsigned long)command->argument, (unsigned long)command->status,
             (unsigned long)command->response, command->complete);
+}
+
+static const char *initialization_stage_label(initialization_stage stage)
+{
+    static const char *const labels[] = {
+        "not-started",    "bringup",   "cccr",    "function-enable",
+        "function-ready", "bus-width", "complete"};
+
+    if ((unsigned int)stage >= sizeof(labels) / sizeof(labels[0]))
+    {
+        return "unknown";
+    }
+
+    return labels[stage];
 }
 
 static void write_report(FILE *file, const probe_result *result)
@@ -48,39 +61,60 @@ static void write_report(FILE *file, const probe_result *result)
             wlan_probe_data_line_levels(result), result->reset_ok,
             result->power_ok, result->clock_ok);
     write_command(file, "cmd0", &result->cmd0);
-    fprintf(file, "bringup_count=%u winner=%d cmd0_attempted=%u\n",
-            result->bringup_count, (int)result->winning_attempt,
+    fprintf(file,
+            "initialization_count=%u winner=%d recovered=%u "
+            "cmd0_attempted=%u\n",
+            result->initialization_count, (int)result->winning_initialization,
+            (unsigned int)(result->winning_initialization > 0),
             result->cmd0_attempted);
-    for (i = 0u; i < result->bringup_count; ++i)
+
+    for (i = 0u; i < result->initialization_count; ++i)
     {
-        const bringup_attempt *entry = &result->bringup[i];
+        const initialization_attempt *initialization = &result->init[i];
+        const bringup_attempt *entry = &initialization->bringup;
 
         fprintf(file,
-                "bringup[%u] name=%s divider=%04X write_power=%u cmd0=%u "
-                "reset=%u power_ok=%u clock_ok=%u power=%02X->%02X "
-                "clock=%04X present=%08lX cmd0_status=%08lX "
-                "cmd5_status=%08lX cmd5_response=%08lX complete=%u\n",
-                i, entry->name, entry->clock_divider, entry->write_power,
-                entry->send_cmd0, entry->reset_ok, entry->power_ok,
-                entry->clock_ok, entry->power_before, entry->power_after,
-                entry->clock_after, (unsigned long)entry->present_after,
+                "initialization[%u] stage=%s init_complete=%u name=%s "
+                "divider=%04X write_power=%u cmd0=%u reset=%u power_ok=%u "
+                "clock_ok=%u power=%02X->%02X clock=%04X present=%08lX "
+                "cmd0_status=%08lX cmd5_status=%08lX "
+                "cmd5_response=%08lX cmd5_complete=%u\n",
+                i, initialization_stage_label(initialization->stage),
+                initialization->complete, entry->name, entry->clock_divider,
+                entry->write_power, entry->send_cmd0, entry->reset_ok,
+                entry->power_ok, entry->clock_ok, entry->power_before,
+                entry->power_after, entry->clock_after,
+                (unsigned long)entry->present_after,
                 (unsigned long)entry->cmd0.status,
                 (unsigned long)entry->cmd5.status,
                 (unsigned long)entry->cmd5.response, entry->cmd5.complete);
+
         fprintf(file,
-                "bringup[%u]_cmd5 inquiry_status=%08lX "
+                "initialization[%u]_cmd5 inquiry_status=%08lX "
                 "inquiry_response=%08lX inquiry_complete=%u commands=%u\n",
                 i, (unsigned long)entry->cmd5_inquiry.status,
                 (unsigned long)entry->cmd5_inquiry.response,
                 entry->cmd5_inquiry.complete, entry->cmd5_command_count);
+
         fprintf(file,
-                "bringup[%u]_select cmd3_status=%08lX cmd3_response=%08lX "
-                "rca=%04X cmd7_status=%08lX cmd7_response=%08lX\n",
+                "initialization[%u]_select cmd3_status=%08lX "
+                "cmd3_response=%08lX rca=%04X cmd7_status=%08lX "
+                "cmd7_response=%08lX\n",
                 i, (unsigned long)entry->cmd3.status,
                 (unsigned long)entry->cmd3.response, entry->rca,
                 (unsigned long)entry->cmd7.status,
                 (unsigned long)entry->cmd7.response);
+
+        fprintf(file,
+                "initialization[%u]_cmd52 index=%u argument=%08lX "
+                "status=%08lX response=%08lX complete=%u\n",
+                i, (unsigned int)initialization->cmd52_last.index,
+                (unsigned long)initialization->cmd52_last.argument,
+                (unsigned long)initialization->cmd52_last.status,
+                (unsigned long)initialization->cmd52_last.response,
+                initialization->cmd52_last.complete);
     }
+
     fprintf(file, "cmd5 status=%08lX response=%08lX complete=%u ocr=%08lX\n",
             (unsigned long)result->cmd5.status,
             (unsigned long)result->cmd5.response, result->cmd5.complete,

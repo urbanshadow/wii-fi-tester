@@ -2,7 +2,7 @@
 <app version="1">
   <name>Wii-Fi Tester</name>
   <coder>Open-source homebrew</coder>
-  <version>0.5.0</version>
+  <version>0.5.1</version>
   <release_date>20260722000000</release_date>
   <short_description>Non-persistent Wii WLAN hardware tester</short_description>
   <long_description>Probes an internally installed Wii WLAN module directly through Hollywood SDIO1 using an adaptive, bounded bring-up sequence, validates CMD52/CMD53, and enumerates the BCM4318 SSB backplane. Produces stage-specific diagnostics and saves its report to SD or USB. It does not use the IOS WLAN driver, install or replace IOS, or write NAND. Direct hardware access is required.</long_description>

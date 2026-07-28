@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1 - 2026-07-29
+
+- Changed probe workflow to be even more IOS80 alike
+
+## 0.5.0 - 2026-07-29
+
+- Probe megafile splitted in redable subsystems
+- Include graph reworked
+- App flow improved
+- Test result simplification
+- Extra info on report file
+
 ## 0.4.2 - 2026-07-28
 
 - Reworked probe to use the same procedures as IOS80 v6944, greatly boosting
