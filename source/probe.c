@@ -85,6 +85,7 @@
 #define SDIO_OCR_VDD_32_34 0x00300000u
 
 #define MAX_CIS_BYTES 256u
+#define MAX_CIS_RETRIES 8u
 
 typedef struct
 {
@@ -347,8 +348,16 @@ static bool cmd53_read_pio(u8 function, u32 address, u16 count, u32 *value,
     }
     if (i == 1000u)
     {
-        *status = SDHCI_INT_DATA_TIMEOUT;
-        return false;
+        // test for dat line marked inhibited
+        mmio_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+        (void)wait8_clear(SDHCI_SOFTWARE_RESET,
+                          SDHCI_RESET_CMD | SDHCI_RESET_DATA, 1000u, 100u);
+        if ((mmio_read32(SDHCI_PRESENT_STATE) &
+             (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) != 0u)
+        {
+            *status = SDHCI_INT_DATA_TIMEOUT;
+            return false;
+        }
     }
 
     mmio_write32(SDHCI_INT_STATUS, SDHCI_INT_ALL);
@@ -481,8 +490,29 @@ static bool read_cis_pointer(u32 base, u32 *pointer, command_result *last)
     return true;
 }
 
+// retry cis reads with budget
+static bool cis_read_byte(u32 address, u8 *value, probe_result *result,
+                          unsigned int *budget)
+{
+    do
+    {
+        if (cmd52_read(0u, address, value, &result->cmd52_last))
+        {
+            return true;
+        }
+        if (*budget == 0u)
+        {
+            return false;
+        }
+        --*budget;
+    } while (*budget > 0);
+
+    return false;
+}
+
 static bool scan_cis(u32 pointer, probe_result *result)
 {
+    unsigned int budget = MAX_CIS_RETRIES;
     u32 consumed = 0u;
 
     if (pointer == 0u || pointer > 0x1FFFFu)
@@ -497,7 +527,7 @@ static bool scan_cis(u32 pointer, probe_result *result)
         u8 data[4] = {0u, 0u, 0u, 0u};
         unsigned int i;
 
-        if (!cmd52_read(0u, pointer++, &code, &result->cmd52_last))
+        if (!cis_read_byte(pointer++, &code, result, &budget))
         {
             return false;
         }
@@ -510,7 +540,7 @@ static bool scan_cis(u32 pointer, probe_result *result)
         {
             continue;
         }
-        if (!cmd52_read(0u, pointer++, &length, &result->cmd52_last))
+        if (!cis_read_byte(pointer++, &length, result, &budget))
         {
             return false;
         }
@@ -524,7 +554,7 @@ static bool scan_cis(u32 pointer, probe_result *result)
         for (i = 0; i < (unsigned int)length; ++i)
         {
             u8 byte;
-            if (!cmd52_read(0u, pointer + i, &byte, &result->cmd52_last))
+            if (!cis_read_byte(pointer + i, &byte, result, &budget))
             {
                 return false;
             }
@@ -806,7 +836,7 @@ void wlan_probe_run(probe_result *result)
         result->data_path.original_io_enable = result->io_enable;
         result->data_path.original_bus_interface = result->bus_interface;
         result->data_path.bus_width_ok = cmd52_write(
-            0u, 0x07u, result->bus_interface & (u8)~0x03u, &result->cmd52_last);
+            0u, 0x07u, result->bus_interface & (u8)0xA0u, &result->cmd52_last);
         if (result->data_path.bus_width_ok)
         {
             mmio_write8(SDHCI_HOST_CONTROL,
@@ -850,7 +880,8 @@ void wlan_probe_run(probe_result *result)
         }
         (void)cmd52_write(0u, 0x02u, result->data_path.original_io_enable,
                           &result->cmd52_last);
-        (void)cmd52_write(0u, 0x07u, result->data_path.original_bus_interface,
+        (void)cmd52_write(0u, 0x07u,
+                          result->data_path.original_bus_interface & (u8)0xA3u,
                           &result->cmd52_last);
     }
 
