@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 
+#include <gccore.h>
 #include "app.h"
+#include "types.h"
+#include "probe.h"
 #include "diagnosis.h"
 
 probe_diagnosis probe_classify(const probe_result *result)

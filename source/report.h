@@ -3,7 +3,7 @@
 #ifndef WLAN_PROBE_REPORT_H
 #define WLAN_PROBE_REPORT_H
 
-#include "probe.h"
+#include "types.h"
 
 typedef enum
 {

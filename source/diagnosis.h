@@ -3,7 +3,7 @@
 #ifndef WLAN_PROBE_DIAGNOSIS_H
 #define WLAN_PROBE_DIAGNOSIS_H
 
-#include "probe.h"
+#include "types.h"
 
 typedef enum
 {

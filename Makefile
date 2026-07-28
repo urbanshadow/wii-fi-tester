@@ -2,7 +2,7 @@
 
 TARGET := wii-fi-tester
 APP_DIR := dist/apps/wii-fi-tester
-SOURCES := main probe diagnosis presentation report
+SOURCES := main host io sdio cis ssb probe diagnosis presentation report
 OBJECTS := $(addsuffix .o,$(SOURCES))
 DEPS := $(OBJECTS:.o=.d)
 C_SOURCE_FILES := $(addprefix source/,$(addsuffix .c,$(SOURCES)))
@@ -32,7 +32,6 @@ package: $(TARGET).dol
 	mkdir -p $(APP_DIR)
 	cp $(TARGET).dol $(APP_DIR)/boot.dol
 	cp app/meta.xml $(APP_DIR)/meta.xml
-	cp LICENSE THIRD_PARTY_NOTICES.md $(APP_DIR)/
 
 check: all
 	clang-format --dry-run --Werror $(FORMAT_FILES)

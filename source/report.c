@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: MIT
 
+#include <gccore.h>
 #include <fat.h>
 #include <stdio.h>
 
 #include "app.h"
+#include "types.h"
 #include "diagnosis.h"
+#include "probe.h"
 #include "report.h"
 
 static void write_command(FILE *file, const char *name,
                           const command_result *command)
 {
-    fprintf(file, "%s status=%08lX response=%08lX complete=%u\n", name,
-            (unsigned long)command->status, (unsigned long)command->response,
-            command->complete);
+    fprintf(file,
+            "%s index=%u argument=%08lX status=%08lX response=%08lX "
+            "complete=%u\n",
+            name, (unsigned int)command->index,
+            (unsigned long)command->argument,
+            (unsigned long)command->status,
+            (unsigned long)command->response, command->complete);
 }
 
 static void write_report(FILE *file, const probe_result *result)

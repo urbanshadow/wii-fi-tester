@@ -7,6 +7,7 @@
 #include <wiiuse/wpad.h>
 
 #include "app.h"
+#include "types.h"
 #include "presentation.h"
 #include "probe.h"
 #include "report.h"
@@ -50,7 +51,7 @@ static void print_intro(const probe_result *result)
     }
 
     printf("AHB access OK.\n");
-    printf("Press A to run the bounded active probe.\n");
+    printf("Press A to run the test\n");
     printf("Press HOME to leave without touching SDIO1.\n");
 }
 
@@ -90,10 +91,15 @@ int main(void)
         return 0;
     }
 
-    printf("\nProbing... bounded waits may take up to a few seconds.\n");
+    printf("\nTesting...\n");
     wlan_probe_run(&probe);
     presentation_print_results(&probe);
 
+    printf("\nPress 1 to save the report\n");
+    printf("Press HOME to return to the Homebrew Channel.\n");
+    pressed = wait_for_button(WPAD_BUTTON_1 | WPAD_BUTTON_HOME);
+
+    if ((pressed & WPAD_BUTTON_1) != 0)
     {
         const report_save_result saved = report_save(&probe);
 
@@ -103,11 +109,13 @@ int main(void)
         }
         else
         {
-            printf("Report save failed: %s. Photograph this screen.\n",
+            printf("Report save failed: %s.\n",
                    report_save_status_label(saved.status));
         }
+
+        printf("\nPress HOME to return to the Homebrew Channel.\n");
+        wait_for_button(WPAD_BUTTON_HOME);
     }
 
-    (void)wait_for_button(WPAD_BUTTON_HOME);
     return 0;
 }
