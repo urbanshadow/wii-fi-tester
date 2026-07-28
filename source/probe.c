@@ -69,23 +69,27 @@
 #define SDHCI_INT_DATA_END_BIT 0x00400000u
 #define SDHCI_INT_CMD_ERRORS 0x000F0000u
 #define SDHCI_INT_DATA_ERRORS 0x00700000u
-#define SDHCI_INT_ALL 0xFFFFFFFFu
 
 #define SDHCI_CMD_RESP_NONE 0x00u
 #define SDHCI_CMD_RESP_SHORT 0x02u
-#define SDHCI_CMD_RESP_SHORT_BUSY 0x03u
 #define SDHCI_CMD_CRC 0x08u
 #define SDHCI_CMD_INDEX 0x10u
 #define SDHCI_CMD_DATA 0x20u
 
-#define SDHCI_TRNS_BLK_CNT_EN 0x02u
 #define SDHCI_TRNS_READ 0x10u
 
 #define SDIO_R5_ERRORS 0x0000CB00u
+#define SDIO_R5_ERRORS_IOS80 0x0000FF00u
+#define SDIO_R5_STATE_COMMAND 0x00001000u
+#define SDIO_R6_ERRORS 0x0000E000u
 #define SDIO_OCR_VDD_32_34 0x00300000u
+#define SDIO_OCR_IOS80 0x00FFF000u
+#define SDIO_CMD7_EXPECTED_STATUS 0x00001E00u
 
 #define MAX_CIS_BYTES 256u
 #define MAX_CIS_RETRIES 8u
+
+#define WLAN_PROBE_EXTENDED_SSB 1
 
 typedef struct
 {
@@ -172,6 +176,12 @@ static bool wait16_set(u32 reg, u16 mask, unsigned int iterations,
     return false;
 }
 
+static void reset_host_line(u8 line)
+{
+    mmio_write8(SDHCI_SOFTWARE_RESET, line);
+    wait8_clear(SDHCI_SOFTWARE_RESET, line, 1000u, 100u);
+}
+
 static void take_snapshot(host_snapshot *snapshot)
 {
     snapshot->host_control = mmio_read8(SDHCI_HOST_CONTROL);
@@ -193,7 +203,7 @@ static void restore_snapshot(const host_snapshot *snapshot)
     mmio_write32(SDHCI_SIGNAL_ENABLE, 0u);
     mmio_write8(SDHCI_POWER_CONTROL, 0u);
     mmio_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL);
-    (void)wait8_clear(SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL, 1000u, 100u);
+    wait8_clear(SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL, 1000u, 100u);
     mmio_write8(SDHCI_HOST_CONTROL, snapshot->host_control);
     mmio_write8(SDHCI_TIMEOUT_CONTROL, snapshot->timeout_control);
     mmio_write16(SDHCI_CLOCK_CONTROL, snapshot->clock_control);
@@ -225,10 +235,12 @@ static command_result send_command(u8 index, u32 argument, u8 flags)
     if (!wait_command_idle())
     {
         result.status = SDHCI_INT_TIMEOUT;
+        reset_host_line(SDHCI_RESET_CMD);
         return result;
     }
 
-    mmio_write32(SDHCI_INT_STATUS, SDHCI_INT_ALL);
+    mmio_write32(SDHCI_INT_STATUS,
+                 SDHCI_INT_RESPONSE | SDHCI_INT_ERROR | SDHCI_INT_CMD_ERRORS);
     mmio_write32(SDHCI_ARGUMENT, argument);
 
     /* Transfer mode (low half) and command (high half) must be one write. */
@@ -245,6 +257,11 @@ static command_result send_command(u8 index, u32 argument, u8 flags)
         usleep(100);
     }
 
+    if (i == 2000u)
+    {
+        result.status |= SDHCI_INT_TIMEOUT;
+    }
+
     if ((result.status & SDHCI_INT_RESPONSE) != 0u &&
         (result.status & SDHCI_INT_CMD_ERRORS) == 0u)
     {
@@ -258,10 +275,33 @@ static command_result send_command(u8 index, u32 argument, u8 flags)
 
     if (!result.complete)
     {
-        mmio_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD);
-        (void)wait8_clear(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD, 1000u, 100u);
+        reset_host_line(SDHCI_RESET_CMD);
     }
+
     return result;
+}
+
+static bool ios_get_ocr(u32 argument, command_result *result,
+                        unsigned int *command_count)
+{
+    unsigned int retry;
+
+    for (retry = 0u; retry < 200u; ++retry)
+    {
+        *result = send_command(5u, argument, SDHCI_CMD_RESP_SHORT);
+        ++*command_count;
+
+        if (!result->complete)
+        {
+            return false;
+        }
+        if ((result->response & WLAN_SDIO_OCR_READY) != 0u)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool configure_clock_divider(u16 encoded)
@@ -274,26 +314,8 @@ static bool configure_clock_divider(u16 encoded)
     }
     mmio_write16(SDHCI_CLOCK_CONTROL,
                  encoded | SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN);
-    usleep(2000);
+    usleep(2);
     return true;
-}
-
-static u16 clock_divider_from_caps(u32 capabilities)
-{
-    const u32 base_mhz = (capabilities >> 8) & 0x3Fu;
-    u32 divisor = 1u;
-
-    if (base_mhz == 0u)
-    {
-        return 0u;
-    }
-
-    /* SDHCI 1.x/2.x power-of-two divisor, capped at 256. */
-    while (((base_mhz * 1000000u) / divisor) > 400000u && divisor < 256u)
-    {
-        divisor <<= 1;
-    }
-    return (u16)((divisor >> 1) << 8);
 }
 
 static bool cmd52_read(u8 function, u32 address, u8 *value,
@@ -333,9 +355,14 @@ static bool cmd53_read_pio(u8 function, u32 address, u16 count, u32 *value,
                          ((address & 0x1FFFFu) << 9) | (count & 0x1FFu);
     const u16 command = (u16)((53u << 8) | SDHCI_CMD_RESP_SHORT |
                               SDHCI_CMD_CRC | SDHCI_CMD_INDEX | SDHCI_CMD_DATA);
-    const u16 transfer = SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_READ;
+    const u16 transfer = SDHCI_TRNS_READ;
+    bool command_complete = false;
+    bool response_ok = false;
     bool got_byte = false;
     unsigned int i;
+
+    *status = 0u;
+    *response = 0u;
 
     for (i = 0; i < 1000u; ++i)
     {
@@ -346,21 +373,42 @@ static bool cmd53_read_pio(u8 function, u32 address, u16 count, u32 *value,
         }
         usleep(100);
     }
+
     if (i == 1000u)
     {
-        // test for dat line marked inhibited
-        mmio_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
-        (void)wait8_clear(SDHCI_SOFTWARE_RESET,
-                          SDHCI_RESET_CMD | SDHCI_RESET_DATA, 1000u, 100u);
-        if ((mmio_read32(SDHCI_PRESENT_STATE) &
-             (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) != 0u)
+        u32 present = mmio_read32(SDHCI_PRESENT_STATE);
+
+        if ((present & SDHCI_CMD_INHIBIT) != 0u)
         {
-            *status = SDHCI_INT_DATA_TIMEOUT;
+            reset_host_line(SDHCI_RESET_CMD);
+        }
+
+        if ((present & SDHCI_DATA_INHIBIT) != 0u)
+        {
+            reset_host_line(SDHCI_RESET_DATA);
+        }
+
+        present = mmio_read32(SDHCI_PRESENT_STATE);
+        if ((present & (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) != 0u)
+        {
+            if ((present & SDHCI_CMD_INHIBIT) != 0u)
+            {
+                *status |= SDHCI_INT_TIMEOUT;
+            }
+
+            if ((present & SDHCI_DATA_INHIBIT) != 0u)
+            {
+                *status |= SDHCI_INT_DATA_TIMEOUT;
+            }
+
             return false;
         }
     }
 
-    mmio_write32(SDHCI_INT_STATUS, SDHCI_INT_ALL);
+    mmio_write32(SDHCI_INT_STATUS, SDHCI_INT_RESPONSE | SDHCI_INT_DATA_END |
+                                       SDHCI_INT_DATA_AVAIL | SDHCI_INT_ERROR |
+                                       SDHCI_INT_CMD_ERRORS |
+                                       SDHCI_INT_DATA_ERRORS);
     mmio_write16(SDHCI_BLOCK_SIZE, count);
     mmio_write16(SDHCI_BLOCK_COUNT, 1u);
     mmio_write32(SDHCI_INT_ENABLE, SDHCI_INT_RESPONSE | SDHCI_INT_DATA_END |
@@ -373,42 +421,65 @@ static bool cmd53_read_pio(u8 function, u32 address, u16 count, u32 *value,
     for (i = 0; i < 3000u; ++i)
     {
         *status = mmio_read32(SDHCI_INT_STATUS);
-        if ((*status & (SDHCI_INT_CMD_ERRORS | SDHCI_INT_DATA_ERRORS)) != 0u)
+
+        if ((*status & SDHCI_INT_RESPONSE) != 0u && !command_complete)
         {
-            break;
-        }
-        if ((*status & SDHCI_INT_RESPONSE) != 0u)
-        {
+            command_complete = true;
             *response = mmio_read32(SDHCI_RESPONSE);
-            if ((*response & SDIO_R5_ERRORS) != 0u)
+            response_ok =
+                (*response & SDIO_R5_ERRORS_IOS80) == SDIO_R5_STATE_COMMAND;
+
+            if (!response_ok)
             {
                 break;
             }
         }
+
+        if ((*status & (SDHCI_INT_CMD_ERRORS | SDHCI_INT_DATA_ERRORS)) != 0u)
+        {
+            break;
+        }
+
         if (!got_byte && (*status & SDHCI_INT_DATA_AVAIL) != 0u)
         {
+            mmio_write32(SDHCI_INT_STATUS, SDHCI_INT_DATA_AVAIL);
             *value = mmio_read32(SDHCI_BUFFER);
             got_byte = true;
         }
+
         if (got_byte && (*status & SDHCI_INT_DATA_END) != 0u)
         {
             break;
         }
+
         usleep(100);
     }
 
-    mmio_write32(SDHCI_INT_STATUS, *status);
-    if (!got_byte || (*status & SDHCI_INT_DATA_END) == 0u)
+    if (i == 3000u)
     {
-        mmio_write8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
-        (void)wait8_clear(SDHCI_SOFTWARE_RESET,
-                          SDHCI_RESET_CMD | SDHCI_RESET_DATA, 1000u, 100u);
+        if (!command_complete)
+        {
+            *status |= SDHCI_INT_TIMEOUT;
+        }
+        else
+        {
+            *status |= SDHCI_INT_DATA_TIMEOUT;
+        }
     }
-    if (count < 4u)
+
+    mmio_write32(SDHCI_INT_STATUS, *status);
+
+    if ((*status & (SDHCI_INT_CMD_ERRORS | SDHCI_INT_DATA_ERRORS)) != 0u)
+    {
+        reset_host_line(SDHCI_RESET_DATA);
+    }
+
+    if (got_byte && count < 4u)
     {
         *value &= (1u << (count * 8u)) - 1u;
     }
-    return (*response & SDIO_R5_ERRORS) == 0u && got_byte &&
+
+    return command_complete && response_ok && got_byte &&
            (*status & SDHCI_INT_DATA_END) != 0u;
 }
 
@@ -419,18 +490,18 @@ static bool ssb_set_window(u32 address, command_result *last)
            cmd52_write(1u, 0x1000Cu, (u8)(address >> 24), last);
 }
 
-static bool ssb_scan_read32(u8 core_index, u16 offset, u32 *value,
-                            command_result *last)
+static bool ssb_scan_read32(u8 core_index, u16 offset, u32 *value)
 {
-    const u32 core_address = 0x18000000u + (u32)core_index * 0x1000u;
-    const u32 sdio_address = offset;
+    const u32 backplane_offset = (u32)core_index * 0x1000u + offset;
+    const u32 sdio_address = 0x8000u | backplane_offset;
     u32 status = 0u;
     u32 response = 0u;
 
-    if (!ssb_set_window(core_address, last))
+    if (backplane_offset >= 0x8000u)
     {
         return false;
     }
+
     return cmd53_read_pio(1u, sdio_address, 4u, value, &status, &response);
 }
 
@@ -443,16 +514,14 @@ static void run_ssb_probe(probe_result *result)
     ssb->attempted = true;
     ssb->window_ok = ssb_set_window(0x18000000u, &result->cmd52_last);
     if (!ssb->window_ok ||
-        !ssb_scan_read32(0u, 0x0FFCu, &ssb->chipcommon_idhigh,
-                         &result->cmd52_last))
+        !ssb_scan_read32(0u, 0x0FFCu, &ssb->chipcommon_idhigh))
     {
         return;
     }
     ssb->chipcommon_ok =
         ssb->chipcommon_idhigh != 0u && ssb->chipcommon_idhigh != 0xFFFFFFFFu;
     if (!ssb->chipcommon_ok ||
-        !ssb_scan_read32(0u, 0x0000u, &ssb->chip_id_register,
-                         &result->cmd52_last))
+        !ssb_scan_read32(0u, 0x0000u, &ssb->chip_id_register))
     {
         return;
     }
@@ -465,8 +534,7 @@ static void run_ssb_probe(probe_result *result)
     }
     for (index = 0u; index < count; ++index)
     {
-        if (!ssb_scan_read32(index, 0x0FFCu, &ssb->core_idhigh[index],
-                             &result->cmd52_last))
+        if (!ssb_scan_read32(index, 0x0FFCu, &ssb->core_idhigh[index]))
         {
             break;
         }
@@ -583,11 +651,7 @@ bool wlan_command_has_signal_error(const command_result *command)
 
 static bool run_bringup_attempt(bringup_attempt *attempt, u8 power_value)
 {
-    unsigned int retry;
-
-    mmio_write32(SDHCI_SIGNAL_ENABLE, 0u);
-
-    /* Nintendo's WL driver resets ALL, CMD, and DATA together on Hollywood. */
+    // reset all following IOS implementation
     mmio_write8(SDHCI_SOFTWARE_RESET,
                 SDHCI_RESET_ALL | SDHCI_RESET_CMD | SDHCI_RESET_DATA);
     attempt->reset_ok = wait8_clear(
@@ -598,14 +662,28 @@ static bool run_bringup_attempt(bringup_attempt *attempt, u8 power_value)
         return false;
     }
 
+    mmio_write16(SDHCI_INT_STATUS, 0x01FFu);
+    mmio_write16(SDHCI_INT_STATUS + 2u, 0x0FFFu);
+    mmio_write16(SDHCI_INT_ENABLE, 0x01FFu);
+    mmio_write16(SDHCI_INT_ENABLE + 2u, 0xFFFFu);
+    mmio_write16(SDHCI_SIGNAL_ENABLE, 0u);
+    mmio_write8(SDHCI_HOST_CONTROL,
+                mmio_read8(SDHCI_HOST_CONTROL) & (u8)~0x06u);
+    mmio_write8(SDHCI_TIMEOUT_CONTROL, 0x0Eu);
+
+    attempt->clock_ok = configure_clock_divider(attempt->clock_divider);
+    attempt->clock_after = mmio_read16(SDHCI_CLOCK_CONTROL);
+    if (!attempt->clock_ok)
+    {
+        attempt->present_after = mmio_read32(SDHCI_PRESENT_STATE);
+        return false;
+    }
+
     attempt->power_before = mmio_read8(SDHCI_POWER_CONTROL);
     if (attempt->write_power)
     {
-        mmio_write8(SDHCI_POWER_CONTROL, 0u);
-        usleep(1000);
-        mmio_write8(SDHCI_POWER_CONTROL, power_value);
         mmio_write8(SDHCI_POWER_CONTROL, power_value | SDHCI_POWER_ON);
-        usleep(250000);
+        usleep(50000);
         attempt->power_after = mmio_read8(SDHCI_POWER_CONTROL);
         attempt->power_ok = (attempt->power_after & (SDHCI_POWER_ON | 0x0Eu)) ==
                             (u8)(power_value | SDHCI_POWER_ON);
@@ -617,23 +695,11 @@ static bool run_bringup_attempt(bringup_attempt *attempt, u8 power_value)
         attempt->power_ok = true;
     }
 
-    mmio_write8(SDHCI_HOST_CONTROL,
-                mmio_read8(SDHCI_HOST_CONTROL) & (u8)~0x06u);
-    mmio_write8(SDHCI_TIMEOUT_CONTROL, 0x0Eu);
-    mmio_write32(SDHCI_INT_ENABLE,
-                 SDHCI_INT_RESPONSE | SDHCI_INT_ERROR | SDHCI_INT_CMD_ERRORS);
-    attempt->clock_ok = configure_clock_divider(attempt->clock_divider);
-    attempt->clock_after = mmio_read16(SDHCI_CLOCK_CONTROL);
     attempt->present_after = mmio_read32(SDHCI_PRESENT_STATE);
-    if (!attempt->power_ok || !attempt->clock_ok)
+    if (!attempt->power_ok)
     {
         return false;
     }
-
-    // Reset card after clock/power test
-    command_result card_reset;
-    cmd52_write(0u, 0x06u, 0x08u, &card_reset);
-    usleep(2000);
 
     if (attempt->send_cmd0)
     {
@@ -641,16 +707,46 @@ static bool run_bringup_attempt(bringup_attempt *attempt, u8 power_value)
         usleep(2000);
     }
 
-    for (retry = 0u; retry < 5u; ++retry)
+    if (!ios_get_ocr(0u, &attempt->cmd5_inquiry, &attempt->cmd5_command_count))
     {
-        attempt->cmd5 = send_command(5u, 0u, SDHCI_CMD_RESP_SHORT);
-        if (attempt->cmd5.complete)
-        {
-            return true;
-        }
-        usleep(10000);
+        attempt->cmd5 = attempt->cmd5_inquiry;
+        return false;
     }
-    return false;
+
+    attempt->cmd5 = attempt->cmd5_inquiry;
+
+    if ((attempt->cmd5_inquiry.response & WLAN_SDIO_OCR_NUM_FUNCTIONS_MASK) ==
+            0u ||
+        (attempt->cmd5_inquiry.response & SDIO_OCR_VDD_32_34) == 0u)
+    {
+        return false;
+    }
+
+    if (!ios_get_ocr(SDIO_OCR_IOS80, &attempt->cmd5,
+                     &attempt->cmd5_command_count))
+    {
+        return false;
+    }
+
+    attempt->cmd3 = send_command(3u, 0u, SDHCI_CMD_RESP_SHORT);
+    if (!attempt->cmd3.complete ||
+        (attempt->cmd3.response & SDIO_R6_ERRORS) != 0u)
+    {
+        return false;
+    }
+
+    attempt->rca = (u16)(attempt->cmd3.response >> 16);
+
+    attempt->cmd7 =
+        send_command(7u, (u32)attempt->rca << 16,
+                     SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX);
+    if (!attempt->cmd7.complete ||
+        attempt->cmd7.response != SDIO_CMD7_EXPECTED_STATUS)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 void wlan_probe_run(probe_result *result)
@@ -665,14 +761,9 @@ void wlan_probe_run(probe_result *result)
         bool write_power;
         bool send_cmd0;
     } configurations[WLAN_PROBE_MAX_BRINGUP_ATTEMPTS] = {
-        {"ios-exact", 0x2000u, false, false},
-        {"ios+power", 0x2000u, true, false},
-        {"spec-400k", 0x4000u, true, true},
-        {"ios+cmd0", 0x2000u, true, true},
-        {"slow", 0x8000u, true, true}};
+        {"ios-exact", 0x0100u, true, false},
+        {"ios-retry", 0x0100u, true, false}};
     u8 power_value;
-    u16 spec_divider;
-    u32 selected_ocr;
     unsigned int attempt;
 
     if (result == NULL || result->ahbprot != HW_AHBPROT_ENABLED)
@@ -705,18 +796,17 @@ void wlan_probe_run(probe_result *result)
 
     take_snapshot(&snapshot);
 
-    /*
-     * A normal Wii reaches HBC with IOS's WLAN card already selected.  The
-     * Nintendo WL sequence first resets the card's volatile I/O functions
-     * through CCCR IO_ABORT while the old card clock is still running, then
-     * resets the host.  Skip this on an unconfigured/fresh host.
-     */
-    if ((snapshot.clock_control & (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN)) ==
-        (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN))
+    // disable host signals
+    mmio_write32(SDHCI_SIGNAL_ENABLE, 0u);
+
+    // reset IO functions following IOS code
+    if ((result->present_before & SDHCI_CARD_PRESENT) != 0u &&
+        (snapshot.clock_control & (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN)) ==
+            (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN))
+
     {
         result->pre_reset_attempted = true;
         (void)cmd52_write(0u, 0x06u, 0x08u, &result->pre_reset);
-        usleep(2000);
     }
 
     if ((result->capabilities & SDHCI_CAN_VDD_330) != 0u)
@@ -732,17 +822,20 @@ void wlan_probe_run(probe_result *result)
         goto restore_host;
     }
 
-    spec_divider = clock_divider_from_caps(result->capabilities);
     for (attempt = 0u; attempt < WLAN_PROBE_MAX_BRINGUP_ATTEMPTS; ++attempt)
     {
         bringup_attempt *current = &result->bringup[attempt];
 
+        if (attempt != 0u && (mmio_read16(SDHCI_CLOCK_CONTROL) &
+                              (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN)) ==
+                                 (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_CARD_EN))
+        {
+            command_result retry_reset = {0u, 0u, false};
+            cmd52_write(0u, 0x06u, 0x08u, &retry_reset);
+        }
+
         current->name = configurations[attempt].name;
         current->clock_divider = configurations[attempt].divider;
-        if (attempt == 2u && spec_divider != 0u)
-        {
-            current->clock_divider = spec_divider;
-        }
         current->write_power = configurations[attempt].write_power;
         current->send_cmd0 = configurations[attempt].send_cmd0;
         ++result->bringup_count;
@@ -755,6 +848,9 @@ void wlan_probe_run(probe_result *result)
             result->cmd0_attempted = current->send_cmd0;
             result->cmd0 = current->cmd0;
             result->cmd5 = current->cmd5;
+            result->cmd3 = current->cmd3;
+            result->rca = current->rca;
+            result->cmd7 = current->cmd7;
             break;
         }
     }
@@ -770,61 +866,14 @@ void wlan_probe_run(probe_result *result)
             result->cmd0_attempted = last->send_cmd0;
             result->cmd0 = last->cmd0;
             result->cmd5 = last->cmd5;
+            result->cmd3 = last->cmd3;
+            result->rca = last->rca;
+            result->cmd7 = last->cmd7;
         }
         goto restore_host;
     }
 
     result->ocr = result->cmd5.response;
-    selected_ocr = result->ocr & SDIO_OCR_VDD_32_34;
-    if (selected_ocr == 0u)
-    {
-        goto restore_host;
-    }
-
-    unsigned int cmd5_timeouts = 0u;
-
-    /* Negotiate only the native 3.3 V range; never request 1.8 V switch. */
-    for (attempt = 0; attempt < 100u; ++attempt)
-    {
-        result->cmd5 = send_command(5u, selected_ocr, SDHCI_CMD_RESP_SHORT);
-        if (!result->cmd5.complete)
-        {
-            if (++cmd5_timeouts >= 5u)
-            {
-                break;
-            }
-            usleep(10000);
-            continue;
-        }
-
-        cmd5_timeouts = 0u;
-        result->ocr = result->cmd5.response;
-        if ((result->ocr & WLAN_SDIO_OCR_READY) != 0u)
-        {
-            break;
-        }
-        usleep(10000);
-    }
-    if (!result->cmd5.complete || (result->ocr & WLAN_SDIO_OCR_READY) == 0u)
-    {
-        goto restore_host;
-    }
-
-    result->cmd3 = send_command(
-        3u, 0u, SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX);
-    if (!result->cmd3.complete)
-    {
-        goto restore_host;
-    }
-    result->rca = (u16)(result->cmd3.response >> 16);
-
-    result->cmd7 = send_command(7u, (u32)result->rca << 16,
-                                SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC |
-                                    SDHCI_CMD_INDEX);
-    if (!result->cmd7.complete)
-    {
-        goto restore_host;
-    }
 
     result->cccr_ok =
         cmd52_read(0u, 0x00u, &result->cccr_revision, &result->cmd52_last) &&
@@ -839,66 +888,84 @@ void wlan_probe_run(probe_result *result)
 
     if (result->cccr_ok)
     {
-        bool common_ok = scan_cis(result->common_cis, result);
-        bool function_ok = scan_cis(result->function1_cis, result);
-        result->cis_readable = common_ok || function_ok;
-
-        /*
-         * Force a volatile 1-bit bus for a DAT0-specific test, then read the
-         * SSB ChipCommon identity through the selected backplane window.
-         * Restore both CCCR bus width and IOEx afterwards.
-         */
         result->data_path.attempted = true;
         result->data_path.original_io_enable = result->io_enable;
         result->data_path.original_bus_interface = result->bus_interface;
-        result->data_path.bus_width_ok = cmd52_write(
-            0u, 0x07u, result->bus_interface & (u8)0xA0u, &result->cmd52_last);
-        if (result->data_path.bus_width_ok)
-        {
-            mmio_write8(SDHCI_HOST_CONTROL,
-                        mmio_read8(SDHCI_HOST_CONTROL) & (u8)~0x02u);
-        }
-        result->data_path.enable_ok =
-            result->data_path.bus_width_ok &&
-            cmd52_write(0u, 0x02u, result->io_enable | 0x02u,
-                        &result->cmd52_last);
+
+        result->data_path.enable_ok = cmd52_write(
+            0u, 0x02u, result->io_enable | 0x02u, &result->cmd52_last);
+
         if (result->data_path.enable_ok)
         {
-            for (attempt = 0; attempt < 100u; ++attempt)
+            for (attempt = 0u; attempt < 100u; ++attempt)
             {
                 if (!cmd52_read(0u, 0x03u, &result->data_path.ready_value,
                                 &result->cmd52_last))
                 {
                     break;
                 }
+
                 if ((result->data_path.ready_value & 0x02u) != 0u)
                 {
                     result->data_path.ready_ok = true;
                     break;
                 }
+
                 usleep(10000);
             }
         }
+
         if (result->data_path.ready_ok)
+        {
+            // one bit mode preserving unrelated CCCR
+            result->data_path.bus_width_ok =
+                cmd52_write(0u, 0x07u, result->bus_interface & (u8)0xFCu,
+                            &result->cmd52_last);
+
+            if (result->data_path.bus_width_ok)
+            {
+                mmio_write8(SDHCI_HOST_CONTROL,
+                            mmio_read8(SDHCI_HOST_CONTROL) & (u8)~0x02u);
+            }
+        }
+
+        if (result->data_path.bus_width_ok)
+        {
+            bool common_ok = scan_cis(result->common_cis, result);
+            bool function_ok = false;
+
+            // avoid hammering cis scans
+            if (common_ok || result->cmd52_last.complete)
+            {
+                function_ok = scan_cis(result->function1_cis, result);
+            }
+
+            result->cis_readable = common_ok || function_ok;
+        }
+
+        if (result->cis_readable)
         {
             result->data_path.window_ok =
                 ssb_set_window(0x18000000u, &result->cmd52_last);
         }
+
         if (result->data_path.window_ok)
         {
             result->data_path.read_ok = cmd53_read_pio(
-                1u, 0x0FFCu, 4u, &result->data_path.read_value,
+                1u, 0x8FFCu, 4u, &result->data_path.read_value,
                 &result->data_path.status, &result->data_path.response);
         }
-        if (result->data_path.read_ok)
+
+        if (WLAN_PROBE_EXTENDED_SSB != 0 && result->data_path.read_ok)
         {
             run_ssb_probe(result);
         }
-        (void)cmd52_write(0u, 0x02u, result->data_path.original_io_enable,
-                          &result->cmd52_last);
-        (void)cmd52_write(0u, 0x07u,
-                          result->data_path.original_bus_interface & (u8)0xA3u,
-                          &result->cmd52_last);
+
+        command_result restore_command = {0u, 0u, false};
+        cmd52_write(0u, 0x02u, result->data_path.original_io_enable,
+                    &restore_command);
+        cmd52_write(0u, 0x07u, result->data_path.original_bus_interface,
+                    &restore_command);
     }
 
 restore_host:

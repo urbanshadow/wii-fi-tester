@@ -60,6 +60,19 @@ static void write_report(FILE *file, const probe_result *result)
                 (unsigned long)entry->cmd0.status,
                 (unsigned long)entry->cmd5.status,
                 (unsigned long)entry->cmd5.response, entry->cmd5.complete);
+        fprintf(file,
+                "bringup[%u]_cmd5 inquiry_status=%08lX "
+                "inquiry_response=%08lX inquiry_complete=%u commands=%u\n",
+                i, (unsigned long)entry->cmd5_inquiry.status,
+                (unsigned long)entry->cmd5_inquiry.response,
+                entry->cmd5_inquiry.complete, entry->cmd5_command_count);
+        fprintf(file,
+                "bringup[%u]_select cmd3_status=%08lX cmd3_response=%08lX "
+                "rca=%04X cmd7_status=%08lX cmd7_response=%08lX\n",
+                i, (unsigned long)entry->cmd3.status,
+                (unsigned long)entry->cmd3.response, entry->rca,
+                (unsigned long)entry->cmd7.status,
+                (unsigned long)entry->cmd7.response);
     }
     fprintf(file, "cmd5 status=%08lX response=%08lX complete=%u ocr=%08lX\n",
             (unsigned long)result->cmd5.status,

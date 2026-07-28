@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.2 - 2026-07-28
+
+- Reworked probe to use the same procedures as IOS80 v6944, greatly boosting
+  wlan card revision compatibility.
+- Reworked access to SSB cores (PCI, PCMCIA cores now visible)
+- Light cleanup
+
 ## 0.4.0 — 2026-07-22
 
 - Adopted the project name Wii-Fi Tester consistently across the application,

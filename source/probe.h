@@ -5,7 +5,7 @@
 
 #include <gccore.h>
 
-#define WLAN_PROBE_MAX_BRINGUP_ATTEMPTS 5u
+#define WLAN_PROBE_MAX_BRINGUP_ATTEMPTS 2u
 #define WLAN_PROBE_MAX_SSB_CORES 16u
 #define WLAN_SDIO_OCR_READY 0x80000000u
 #define WLAN_SDIO_OCR_NUM_FUNCTIONS_MASK 0x70000000u
@@ -59,7 +59,12 @@ typedef struct
     u16 clock_after;
     u32 present_after;
     command_result cmd0;
+    command_result cmd3;
+    command_result cmd5_inquiry;
     command_result cmd5;
+    unsigned int cmd5_command_count;
+    command_result cmd7;
+    u16 rca;
 } bringup_attempt;
 
 typedef struct

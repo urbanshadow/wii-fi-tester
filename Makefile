@@ -19,7 +19,7 @@ LDFLAGS := $(MACHDEP) -Wl,-Map,$(TARGET).map
 LIBPATHS := -L$(LIBOGC_LIB)
 LIBS := -lfat -lwiiuse -lbte -logc -lm
 
-.PHONY: all check clean package
+.PHONY: all check clean format package
 
 all: $(TARGET).dol
 
@@ -37,6 +37,9 @@ package: $(TARGET).dol
 check: all
 	clang-format --dry-run --Werror $(FORMAT_FILES)
 	$(CC) -fsyntax-only -fanalyzer $(CFLAGS) $(C_SOURCE_FILES)
+
+format:
+	clang-format -i $(FORMAT_FILES)
 
 clean:
 	rm -f $(OBJECTS) $(DEPS) $(TARGET).elf $(TARGET).dol $(TARGET).map
