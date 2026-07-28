@@ -601,9 +601,11 @@ static bool run_bringup_attempt(bringup_attempt *attempt, u8 power_value)
     attempt->power_before = mmio_read8(SDHCI_POWER_CONTROL);
     if (attempt->write_power)
     {
+        mmio_write8(SDHCI_POWER_CONTROL, 0u);
+        usleep(1000);
         mmio_write8(SDHCI_POWER_CONTROL, power_value);
         mmio_write8(SDHCI_POWER_CONTROL, power_value | SDHCI_POWER_ON);
-        usleep(10000);
+        usleep(250000);
         attempt->power_after = mmio_read8(SDHCI_POWER_CONTROL);
         attempt->power_ok = (attempt->power_after & (SDHCI_POWER_ON | 0x0Eu)) ==
                             (u8)(power_value | SDHCI_POWER_ON);
@@ -627,6 +629,11 @@ static bool run_bringup_attempt(bringup_attempt *attempt, u8 power_value)
     {
         return false;
     }
+
+    // Reset card after clock/power test
+    command_result card_reset;
+    cmd52_write(0u, 0x06u, 0x08u, &card_reset);
+    usleep(2000);
 
     if (attempt->send_cmd0)
     {
@@ -774,14 +781,23 @@ void wlan_probe_run(probe_result *result)
         goto restore_host;
     }
 
+    unsigned int cmd5_timeouts = 0u;
+
     /* Negotiate only the native 3.3 V range; never request 1.8 V switch. */
     for (attempt = 0; attempt < 100u; ++attempt)
     {
         result->cmd5 = send_command(5u, selected_ocr, SDHCI_CMD_RESP_SHORT);
         if (!result->cmd5.complete)
         {
-            break;
+            if (++cmd5_timeouts >= 5u)
+            {
+                break;
+            }
+            usleep(10000);
+            continue;
         }
+
+        cmd5_timeouts = 0u;
         result->ocr = result->cmd5.response;
         if ((result->ocr & WLAN_SDIO_OCR_READY) != 0u)
         {
